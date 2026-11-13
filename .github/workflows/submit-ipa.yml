@@ -2,22 +2,14 @@ name: Submit IPA ratings
 
 on:
   workflow_dispatch:
-    inputs:
-      runner:
-        description: "Runner label (use self-hosted if github-hosted IPs are blocked)"
-        required: true
-        default: ubuntu-latest
-        type: choice
-        options:
-          - ubuntu-latest
-          - self-hosted
   schedule:
     # Weekdays 18:30 UTC (~19:30 CET / 20:30 CEST)
+    # Must run on self-hosted: github-hosted IPs get the site captcha wall.
     - cron: "30 18 * * 1-5"
 
 jobs:
   submit:
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
+    runs-on: self-hosted
     # Required so Environment secrets (EK_USERNAME / EK_PASSWORD) are available
     environment: prod
     timeout-minutes: 15
@@ -39,8 +31,12 @@ jobs:
           code=$(curl -sS -o /tmp/ek-home.html -w "%{http_code}" -A "Mozilla/5.0" \
             "https://egeszsegkonyha.hu/" || echo "curl-failed")
           echo "homepage HTTP $code"
+          if grep -qi 'Security check\|cprot-captcha\|Biztonsági' /tmp/ek-home.html 2>/dev/null; then
+            echo "::error::Site returned captcha/security check — this runner IP is blocked."
+            exit 1
+          fi
           if ! grep -q 'csrf.token\|ialLogin' /tmp/ek-home.html 2>/dev/null; then
-            echo "::error::Homepage has no CSRF/login form — runner IP is likely blocked."
+            echo "::error::Homepage has no CSRF/login form."
             head -c 400 /tmp/ek-home.html || true
             exit 1
           fi
@@ -57,7 +53,6 @@ jobs:
           if [ -n "$missing" ]; then
             echo "::error::Missing:$missing"
             echo "Expected Environment secrets on 'prod': EK_USERNAME, EK_PASSWORD"
-            echo "Settings → Environments → prod → Environment secrets"
             exit 1
           fi
           echo "Credentials present (username length=${#EK_USERNAME})."

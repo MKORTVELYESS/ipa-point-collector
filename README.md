@@ -34,10 +34,12 @@ Credentials can also be passed as `--username` / `--password`, or via `IPA_USERN
    - `EK_USERNAME`
    - `EK_PASSWORD`
    Exact names required. Password belongs in Secrets, not Variables.
-3. Commit/push the workflow (`environment: prod`, JDK 25).
-4. **Actions → Submit IPA ratings → Run workflow**.
-   If CSRF/login fails on `ubuntu-latest`, the site may be blocking GitHub IPs —
-   re-run with runner = `self-hosted` (Settings → Actions → Runners).
+3. Install a **self-hosted runner** on a machine that can open the site
+   without captcha (GitHub-hosted IPs hit `Security check` / iconcaptcha).
+   Repo → Settings → Actions → Runners → New self-hosted runner.
+4. Commit/push the workflow (`environment: prod`, `runs-on: self-hosted`).
+5. Keep the runner online, then **Actions → Submit IPA ratings → Run workflow**,
+   or wait for the weekday schedule.
 
 ## How it works
 
