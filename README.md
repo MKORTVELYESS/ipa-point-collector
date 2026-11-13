@@ -4,8 +4,8 @@ Minimal Java CLI that logs into [egeszsegkonyha.hu](https://egeszsegkonyha.hu/),
 
 ## Requirements
 
-- JDK 25+
-- Maven 3.9+
+- JDK 17+ to compile (JDK 25 recommended to run, matching CI)
+- Maven 3.9+ (point `JAVA_HOME` at a JDK that supports `--release 17`)
 
 ## Local run
 

@@ -11,7 +11,8 @@
   <description>Submit IPA meal ratings via HTTP for egeszsegkonyha.hu</description>
 
   <properties>
-    <maven.compiler.release>25</maven.compiler.release>
+    <!-- Bytecode 17; run with JDK 25 locally / in CI (Maven may use an older JAVA_HOME). -->
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
