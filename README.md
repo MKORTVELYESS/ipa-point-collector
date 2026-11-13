@@ -4,7 +4,7 @@ Minimal Java CLI that logs into [egeszsegkonyha.hu](https://egeszsegkonyha.hu/),
 
 ## Requirements
 
-- JDK 17+
+- JDK 25+
 - Maven 3.9+
 
 ## Local run
@@ -34,8 +34,10 @@ Credentials can also be passed as `--username` / `--password`, or via `IPA_USERN
    - `EK_USERNAME`
    - `EK_PASSWORD`
    Exact names required. Password belongs in Secrets, not Variables.
-3. Commit/push the workflow that sets `environment: prod` on the job.
-4. **Actions → Submit IPA ratings → Run workflow**, or wait for the weekday schedule.
+3. Commit/push the workflow (`environment: prod`, JDK 25).
+4. **Actions → Submit IPA ratings → Run workflow**.
+   If CSRF/login fails on `ubuntu-latest`, the site may be blocking GitHub IPs —
+   re-run with runner = `self-hosted` (Settings → Actions → Runners).
 
 ## How it works
 

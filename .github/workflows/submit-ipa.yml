@@ -2,28 +2,49 @@ name: Submit IPA ratings
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (use self-hosted if github-hosted IPs are blocked)"
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - self-hosted
   schedule:
     # Weekdays 18:30 UTC (~19:30 CET / 20:30 CEST)
     - cron: "30 18 * * 1-5"
 
 jobs:
   submit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     # Required so Environment secrets (EK_USERNAME / EK_PASSWORD) are available
     environment: prod
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "25"
           cache: maven
 
       - name: Build
         run: mvn -B -q package
+
+      - name: Check site reachability
+        run: |
+          code=$(curl -sS -o /tmp/ek-home.html -w "%{http_code}" -A "Mozilla/5.0" \
+            "https://egeszsegkonyha.hu/" || echo "curl-failed")
+          echo "homepage HTTP $code"
+          if ! grep -q 'csrf.token\|ialLogin' /tmp/ek-home.html 2>/dev/null; then
+            echo "::error::Homepage has no CSRF/login form — runner IP is likely blocked."
+            head -c 400 /tmp/ek-home.html || true
+            exit 1
+          fi
+          echo "Homepage looks OK."
 
       - name: Check credentials
         env:

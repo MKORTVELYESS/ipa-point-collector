@@ -47,6 +47,8 @@ public final class IpaPointCollector {
           Pattern.CASE_INSENSITIVE);
   private static final Pattern JSON_TOKEN =
       Pattern.compile("\"token\"\\s*:\\s*\"([a-f0-9]{32})\"");
+  private static final Pattern JOOMLA_CSRF_TOKEN =
+      Pattern.compile("\"csrf\\.token\"\\s*:\\s*\"([a-f0-9]{32})\"");
   private static final Pattern RATING_LINK =
       Pattern.compile(
           "href=[\"']([^\"']*ertekelolap=[a-f0-9]+[^\"']*)[\"']",
@@ -102,6 +104,7 @@ public final class IpaPointCollector {
     cookies.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
     HttpClient http =
         HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(30))
             .cookieHandler(cookies)
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -162,18 +165,61 @@ public final class IpaPointCollector {
   }
 
   private String fetchCsrfToken(String homeHtml) throws IOException, InterruptedException {
+    Optional<String> fromHome = extractCsrfToken(homeHtml);
     HttpResponse<String> resp =
         client.send(
-            requestBuilder(TOKEN_URL).GET().header("Accept", "application/json").build(),
+            requestBuilder(TOKEN_URL)
+                .GET()
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Referer", HOME)
+                .build(),
             HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    String tokenBody = resp.body() == null ? "" : resp.body();
     if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
-      Matcher m = JSON_TOKEN.matcher(resp.body());
+      Matcher m = JSON_TOKEN.matcher(tokenBody);
       if (m.find()) {
         return m.group(1);
       }
     }
-    return extractHiddenToken(homeHtml)
-        .orElseThrow(() -> new IllegalStateException("Could not obtain CSRF token"));
+    if (fromHome.isPresent()) {
+      log("formToken unavailable (HTTP " + resp.statusCode() + "); using homepage CSRF.");
+      return fromHome.get();
+    }
+    throw new IllegalStateException(
+        "Could not obtain CSRF token. formToken HTTP "
+            + resp.statusCode()
+            + " body="
+            + truncate(tokenBody.replaceAll("\\s+", " "), 200)
+            + "; homepage ialLogin="
+            + homeHtml.contains("ialLogin")
+            + " csrf.token="
+            + JOOMLA_CSRF_TOKEN.matcher(homeHtml).find()
+            + " title="
+            + extractTitle(homeHtml)
+            + " (GitHub-hosted runners are often blocked by the site — use a self-hosted runner)");
+  }
+
+  private static Optional<String> extractCsrfToken(String html) {
+    Optional<String> hidden = extractHiddenToken(html);
+    if (hidden.isPresent()) {
+      return hidden;
+    }
+    Matcher m = JOOMLA_CSRF_TOKEN.matcher(html);
+    if (m.find()) {
+      return Optional.of(m.group(1));
+    }
+    return Optional.empty();
+  }
+
+  private static String extractTitle(String html) {
+    Matcher m =
+        Pattern.compile("<title[^>]*>(.*?)</title>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+            .matcher(html);
+    if (!m.find()) {
+      return "(none)";
+    }
+    return truncate(m.group(1).replaceAll("\\s+", " ").trim(), 80);
   }
 
   private void login(String username, String password, String token, String homeHtml)
@@ -493,7 +539,8 @@ public final class IpaPointCollector {
   private static HttpRequest.Builder requestBuilder(String url) {
     return HttpRequest.newBuilder(URI.create(url))
         .timeout(Duration.ofSeconds(60))
-        .header("User-Agent", USER_AGENT);
+        .header("User-Agent", USER_AGENT)
+        .header("Accept-Language", "hu-HU,hu;q=0.9,en;q=0.8");
   }
 
   private static Optional<String> extractHiddenToken(String html) {
