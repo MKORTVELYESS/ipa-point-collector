@@ -1,0 +1,30 @@
+name: Submit IPA ratings
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekdays 18:30 UTC (~19:30 CET / 20:30 CEST)
+    - cron: "30 18 * * 1-5"
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build
+        run: mvn -B -q package
+
+      - name: Submit IPA forms (3 stars)
+        env:
+          EK_USERNAME: ${{ secrets.EK_USERNAME }}
+          EK_PASSWORD: ${{ secrets.EK_PASSWORD }}
+        run: java -jar target/ipa-point-collector-1.0.0.jar
