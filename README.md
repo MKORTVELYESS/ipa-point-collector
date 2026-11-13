@@ -27,10 +27,17 @@ Credentials can also be passed as `--username` / `--password`, or via `IPA_USERN
 
 ## GitHub Actions
 
-1. Add repository secrets:
+1. Create a GitHub Environment named **`ipa`**
+   (Settings → Environments → New environment).
+2. Under that environment, add secrets:
    - `EK_USERNAME`
    - `EK_PASSWORD`
-2. Run **Actions → Submit IPA ratings → Run workflow**, or wait for the weekday schedule.
+3. Commit/push so the workflow has `environment: ipa` on the job
+   (Environment secrets are only injected when the job names that environment).
+4. Run **Actions → Submit IPA ratings → Run workflow**, or wait for the weekday schedule.
+
+If your environment has a different name, change `environment:` in
+`.github/workflows/submit-ipa.yml` to match.
 
 ## How it works
 

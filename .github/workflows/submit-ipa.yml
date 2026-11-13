@@ -9,6 +9,8 @@ on:
 jobs:
   submit:
     runs-on: ubuntu-latest
+    # Required so Environment secrets (EK_USERNAME / EK_PASSWORD) are available
+    environment: ipa
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
