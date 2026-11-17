@@ -480,17 +480,12 @@ public final class IpaPointCollector {
       throw new IllegalStateException(
           "Submit HTTP " + resp.statusCode() + " title=" + extractTitle(out));
     }
-    boolean stillOpen = out.contains("name=\"postsurvey\"") || out.contains("name='postsurvey'");
-    if (stillOpen && out.contains("ipa_answer_food")) {
-      throw new IllegalStateException(
-          "Submit response still contains an open survey form; title="
-              + extractTitle(out)
-              + " snippet="
-              + truncate(out.replaceAll("\\s+", " "), 300));
-    }
+    String ertekelolap =
+        queryParam(formUrl, "ertekelolap")
+            .orElseThrow(() -> new IllegalStateException("form URL missing ertekelolap"));
 
-    // Site can lag briefly before the submit sticks — retry before declaring failure
-    boolean stuck = true;
+    // Confirm on the IPA list page: row should flip from close (✗) to check (✓)
+    boolean accepted = false;
     for (int attempt = 1; attempt <= 4; attempt++) {
       try {
         Thread.sleep(attempt == 1 ? 1500 : 2000);
@@ -498,23 +493,55 @@ public final class IpaPointCollector {
         Thread.currentThread().interrupt();
         break;
       }
-      String verify = get(formUrl);
-      if (!verify.contains("name=\"postsurvey\"") && !verify.contains("name='postsurvey'")) {
-        stuck = false;
+      String listHtml = get(IPA_LIST);
+      Optional<FormRowStatus> status = findFormRowStatus(listHtml, ertekelolap);
+      if (status.isPresent() && status.get() == FormRowStatus.SUBMITTED) {
+        accepted = true;
         break;
       }
-      log("  Waiting for submit to appear on site (try " + attempt + "/4)…");
+      log(
+          "  Waiting for list checkmark (try "
+              + attempt
+              + "/4, status="
+              + status.map(Enum::name).orElse("MISSING")
+              + ")…");
     }
-    if (stuck) {
+    if (!accepted) {
       throw new IllegalStateException(
-          "POST returned OK but form still has postsurvey button after retries."
-              + " POST title="
-              + extractTitle(out)
-              + " bodyLen="
-              + out.length()
-              + (dumpFields ? "" : " (re-run with --dump-fields if this keeps happening)"));
+          "POST returned HTTP "
+              + resp.statusCode()
+              + " but list page still shows no checkmark for ertekelolap="
+              + ertekelolap
+              + "; POST title="
+              + extractTitle(out));
     }
     log("  Submitted.");
+  }
+
+  private enum FormRowStatus {
+    OPEN,
+    SUBMITTED
+  }
+
+  /** Status of a Kitölthető row identified by ertekelolap id (check vs close icon). */
+  private static Optional<FormRowStatus> findFormRowStatus(String listHtml, String ertekelolap) {
+    String kitoltheto = extractKitolthetoSection(listHtml);
+    Matcher rows = TABLE_ROW.matcher(kitoltheto);
+    while (rows.find()) {
+      String row = rows.group(1);
+      if (!row.contains(ertekelolap)) {
+        continue;
+      }
+      String lower = row.toLowerCase();
+      if (lower.contains("icon: check") || lower.contains("icon:check")) {
+        return Optional.of(FormRowStatus.SUBMITTED);
+      }
+      if (lower.contains("icon: close") || lower.contains("icon:close")) {
+        return Optional.of(FormRowStatus.OPEN);
+      }
+      return Optional.empty();
+    }
+    return Optional.empty();
   }
 
   /** HAR always sends ertekelolap + week=YYYYWW even if easy to miss in HTML parsing. */
