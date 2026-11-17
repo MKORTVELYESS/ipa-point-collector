@@ -493,7 +493,7 @@ public final class IpaPointCollector {
     boolean stuck = true;
     for (int attempt = 1; attempt <= 4; attempt++) {
       try {
-        Thread.sleep(10000);
+        Thread.sleep(attempt == 1 ? 1500 : 2000);
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         break;
