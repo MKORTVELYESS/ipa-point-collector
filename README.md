@@ -20,30 +20,54 @@ Useful flags:
 
 ```bash
 java -jar target/ipa-point-collector-1.0.0.jar --dry-run
+java -jar target/ipa-point-collector-1.0.0.jar --dump-fields
 java -jar target/ipa-point-collector-1.0.0.jar --rating 3
 ```
 
 Credentials can also be passed as `--username` / `--password`, or via `IPA_USERNAME` / `IPA_PASSWORD`.
 
-## GitHub Actions
+## GitHub Actions (boot → dispatch → self-hosted)
 
-1. Use the GitHub Environment named **`prod`**
-   (Settings → Environments). Name must match `environment: prod`
-   in the workflow (case-sensitive).
-2. Under **Environment secrets** (not repository secrets, not Variables), add:
+There is **no schedule**. Flow:
+
+1. You turn the PC on  
+2. Local script calls GitHub to `workflow_dispatch`  
+3. Job runs on the **self-hosted** runner on that same PC (home IP → no captcha wall)
+
+### One-time setup
+
+1. **Environment secrets** on GitHub Environment **`prod`**:
    - `EK_USERNAME`
    - `EK_PASSWORD`
-   Exact names required. Password belongs in Secrets, not Variables.
-3. Install a **self-hosted runner** on a machine that can open the site
-   without captcha (GitHub-hosted IPs hit `Security check` / iconcaptcha).
-   Repo → Settings → Actions → Runners → New self-hosted runner.
-4. Commit/push the workflow (`environment: prod`, `runs-on: self-hosted`).
-5. Keep the runner online, then **Actions → Submit IPA ratings → Run workflow**,
-   or wait for the weekday schedule.
+2. **Self-hosted runner** on this PC  
+   Repo → Settings → Actions → Runners → New self-hosted runner.  
+   Prefer installing it as a **Windows service** so it is online at boot.
+3. **PAT** that can dispatch workflows (classic scope `workflow`, or fine-grained Actions write).  
+   Store as a **user** env var (survives reboots for your account):
+
+   ```powershell
+   setx IPA_GH_TOKEN "ghp_..."
+   ```
+
+   Open a new terminal after `setx`.
+4. **Register logon trigger** (once):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\register-startup.ps1
+   ```
+
+   Or run manually anytime:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\trigger-ipa.ps1
+   ```
+
+`trigger-ipa.ps1` waits ~90s for the runner, then `POST`s  
+`/repos/.../actions/workflows/submit-ipa.yml/dispatches`.
 
 ## How it works
 
 1. GET homepage + CSRF token (`marketingakcio.formToken`)
 2. AJAX login (`POST /index.php` with `X-IAL-Login: 1`)
-3. GET `/index.php/etlapunk?ipakerdoivek` and collect `ertekelolap=…` links
+3. GET `/index.php/etlapunk?ipakerdoivek` and collect open `ertekelolap=…` links
 4. For each form: GET page, parse survey fields, set every `ipa_answer_food[*]=3`, POST submit

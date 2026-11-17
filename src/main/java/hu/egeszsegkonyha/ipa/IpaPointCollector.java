@@ -53,12 +53,9 @@ public final class IpaPointCollector {
       Pattern.compile(
           "href=[\"']([^\"']*ertekelolap=[a-f0-9]+[^\"']*)[\"']",
           Pattern.CASE_INSENSITIVE);
-  /** Open (not yet submitted) rows in Kitölthető: Megtekint link + close icon. */
-  private static final Pattern OPEN_FORM_ROW =
-      Pattern.compile(
-          "<tr\\b[^>]*>\\s*<td\\b[^>]*>.*?<a\\b[^>]*href=[\"']([^\"']*ertekelolap=[a-f0-9]+[^\"']*)[\"'][^>]*>.*?"
-              + "uk-icon=[\"']icon:\\s*close\\b",
-          Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+  /** Single table row — must not span rows (DOTALL across rows paired wrong links with close icons). */
+  private static final Pattern TABLE_ROW =
+      Pattern.compile("<tr\\b[^>]*>(.*?)</tr>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
   private static final Pattern JSON_REDIRECT =
       Pattern.compile("\"redirect\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
   private static final Pattern JSON_ERROR =
@@ -82,11 +79,13 @@ public final class IpaPointCollector {
 
   private final HttpClient client;
   private final boolean dryRun;
+  private final boolean dumpFields;
   private final int rating;
 
-  private IpaPointCollector(HttpClient client, boolean dryRun, int rating) {
+  private IpaPointCollector(HttpClient client, boolean dryRun, boolean dumpFields, int rating) {
     this.client = client;
     this.dryRun = dryRun;
+    this.dumpFields = dumpFields;
     this.rating = rating;
   }
 
@@ -110,7 +109,8 @@ public final class IpaPointCollector {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-    IpaPointCollector app = new IpaPointCollector(http, parsed.dryRun, parsed.rating);
+    IpaPointCollector app =
+        new IpaPointCollector(http, parsed.dryRun, parsed.dumpFields, parsed.rating);
     int exit = app.run(username, password);
     System.exit(exit);
   }
@@ -322,15 +322,16 @@ public final class IpaPointCollector {
   private List<String> discoverRatingUrls(String html) {
     Set<String> urls = new LinkedHashSet<>();
     String kitoltheto = extractKitolthetoSection(html);
-    Matcher open = OPEN_FORM_ROW.matcher(kitoltheto);
-    while (open.find()) {
-      urls.add(absolutize(htmlDecode(open.group(1))));
-    }
-    // Fallback: any ertekelolap link in Kitölthető (or whole page if section missing)
-    if (urls.isEmpty()) {
-      Matcher m = RATING_LINK.matcher(kitoltheto);
-      while (m.find()) {
-        urls.add(absolutize(htmlDecode(m.group(1))));
+    Matcher rows = TABLE_ROW.matcher(kitoltheto);
+    while (rows.find()) {
+      String row = rows.group(1);
+      // Open = red close icon in Beküldött column (same row only)
+      if (!row.toLowerCase().contains("icon: close") && !row.toLowerCase().contains("icon:close")) {
+        continue;
+      }
+      Matcher link = RATING_LINK.matcher(row);
+      if (link.find()) {
+        urls.add(absolutize(htmlDecode(link.group(1))));
       }
     }
     return new ArrayList<>(urls);
@@ -399,6 +400,8 @@ public final class IpaPointCollector {
       throw new IllegalStateException("Could not parse survey form fields");
     }
 
+    fillMissingFromUrl(formUrl, fields);
+
     // Force every food answer to the configured rating (default 3 = good)
     for (String key : new ArrayList<>(fields.keySet())) {
       if (key.startsWith("ipa_answer_food[")) {
@@ -415,37 +418,133 @@ public final class IpaPointCollector {
     // Ensure service questions exist as in the HAR (unchecked => 0)
     fields.putIfAbsent("ipa_szolg[5]", "0");
     fields.putIfAbsent("ipa_szolg[6]", "0");
+    fields.putIfAbsent("ipa_comment_hosszu", "");
+
+    // Submit button must be present (name+value); keep it last like a browser
+    fields.remove("postsurvey");
     fields.put("postsurvey", "Értékelés beküldése");
 
     long foodCount =
         fields.keySet().stream().filter(k -> k.startsWith("ipa_answer_food[")).count();
+    if (foodCount == 0) {
+      throw new IllegalStateException("No ipa_answer_food fields found on survey page");
+    }
+    for (String key : new ArrayList<>(fields.keySet())) {
+      if (!key.startsWith("ipa_answer_food[")) {
+        continue;
+      }
+      String suffix = key.substring("ipa_answer_food".length()); // [4_123]
+      if (!fields.containsKey("ipa_food_id" + suffix)) {
+        throw new IllegalStateException("Missing ipa_food_id" + suffix + " for " + key);
+      }
+      if (!fields.containsKey("ipa_etlap_no" + suffix)) {
+        throw new IllegalStateException("Missing ipa_etlap_no" + suffix + " for " + key);
+      }
+      fields.putIfAbsent("ipa_etel_nap" + suffix, queryParam(formUrl, "ertekelesnap").orElse(""));
+      fields.putIfAbsent("ipa_comment_food" + suffix, "");
+    }
+
     log("  Foods to rate: " + foodCount + " → " + rating + " stars");
+    String body = encodeForm(fields);
+    if (dumpFields || dryRun) {
+      log("  Fields:");
+      for (Map.Entry<String, String> e : fields.entrySet()) {
+        log("    " + e.getKey() + "=" + e.getValue());
+      }
+      log("  POST body: " + body);
+    }
 
     if (dryRun) {
       log("  Dry-run: not posting.");
       return;
     }
 
+    // Match browser HAR: no charset suffix on Content-Type
     HttpResponse<String> resp =
         client.send(
             requestBuilder(formUrl)
-                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Origin", BASE)
                 .header("Referer", formUrl)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .POST(HttpRequest.BodyPublishers.ofString(encodeForm(fields)))
+                .header("Cache-Control", "max-age=0")
+                .header("Upgrade-Insecure-Requests", "1")
+                .header(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build(),
             HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
-    if (resp.statusCode() >= 400) {
-      throw new IllegalStateException("Submit HTTP " + resp.statusCode());
-    }
     String out = resp.body() == null ? "" : resp.body();
+    if (resp.statusCode() >= 400) {
+      throw new IllegalStateException(
+          "Submit HTTP " + resp.statusCode() + " title=" + extractTitle(out));
+    }
     boolean stillOpen = out.contains("name=\"postsurvey\"") || out.contains("name='postsurvey'");
     if (stillOpen && out.contains("ipa_answer_food")) {
-      throw new IllegalStateException("Submit response still contains an open survey form");
+      throw new IllegalStateException(
+          "Submit response still contains an open survey form; title="
+              + extractTitle(out)
+              + " snippet="
+              + truncate(out.replaceAll("\\s+", " "), 300));
+    }
+
+    // Site can lag briefly before the submit sticks — retry before declaring failure
+    boolean stuck = true;
+    for (int attempt = 1; attempt <= 4; attempt++) {
+      try {
+        Thread.sleep(attempt == 1 ? 1500 : 2000);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      String verify = get(formUrl);
+      if (!verify.contains("name=\"postsurvey\"") && !verify.contains("name='postsurvey'")) {
+        stuck = false;
+        break;
+      }
+      log("  Waiting for submit to appear on site (try " + attempt + "/4)…");
+    }
+    if (stuck) {
+      throw new IllegalStateException(
+          "POST returned OK but form still has postsurvey button after retries."
+              + " POST title="
+              + extractTitle(out)
+              + " bodyLen="
+              + out.length()
+              + (dumpFields ? "" : " (re-run with --dump-fields if this keeps happening)"));
     }
     log("  Submitted.");
+  }
+
+  /** HAR always sends ertekelolap + week=YYYYWW even if easy to miss in HTML parsing. */
+  private static void fillMissingFromUrl(String formUrl, Map<String, String> fields) {
+    queryParam(formUrl, "ertekelolap").ifPresent(v -> fields.putIfAbsent("ertekelolap", v));
+    if (!fields.containsKey("week")) {
+      Optional<String> year = queryParam(formUrl, "ertekelesev");
+      Optional<String> week = queryParam(formUrl, "ertekeleshet");
+      if (year.isPresent() && week.isPresent()) {
+        fields.put("week", year.get() + week.get());
+      }
+    }
+  }
+
+  private static Optional<String> queryParam(String url, String name) {
+    int q = url.indexOf('?');
+    if (q < 0) {
+      return Optional.empty();
+    }
+    for (String part : url.substring(q + 1).split("&")) {
+      int eq = part.indexOf('=');
+      if (eq <= 0) {
+        continue;
+      }
+      String key = part.substring(0, eq);
+      if (key.equals(name)) {
+        return Optional.of(htmlDecode(part.substring(eq + 1)));
+      }
+    }
+    return Optional.empty();
   }
 
   /**
@@ -469,7 +568,15 @@ public final class IpaPointCollector {
         }
       }
       if ("checkbox".equals(type) || "radio".equals(type)) {
-        if (!attrs.containsKey("checked")) {
+        // Boolean HTML attrs may be bare `checked` (no =value) — ATTR regex misses those.
+        String raw = inputs.group(1);
+        boolean isChecked =
+            attrs.containsKey("checked") || raw.matches("(?i).*\\bchecked\\b.*");
+        if (!isChecked) {
+          // Still record radio group names so we can force a rating later
+          if ("radio".equals(type) && name.startsWith("ipa_answer_food[")) {
+            fields.putIfAbsent(name, "");
+          }
           continue;
         }
       }
@@ -644,12 +751,14 @@ public final class IpaPointCollector {
     final String username;
     final String password;
     final boolean dryRun;
+    final boolean dumpFields;
     final int rating;
 
-    Args(String username, String password, boolean dryRun, int rating) {
+    Args(String username, String password, boolean dryRun, boolean dumpFields, int rating) {
       this.username = username;
       this.password = password;
       this.dryRun = dryRun;
+      this.dumpFields = dumpFields;
       this.rating = rating;
     }
 
@@ -657,12 +766,14 @@ public final class IpaPointCollector {
       String user = null;
       String pass = null;
       boolean dry = false;
+      boolean dump = false;
       int rating = 3;
       for (int i = 0; i < args.length; i++) {
         switch (args[i]) {
           case "--username", "-u" -> user = requireValue(args, ++i, args[i - 1]);
           case "--password", "-p" -> pass = requireValue(args, ++i, args[i - 1]);
           case "--dry-run" -> dry = true;
+          case "--dump-fields" -> dump = true;
           case "--rating" -> rating = Integer.parseInt(requireValue(args, ++i, "--rating"));
           case "--help", "-h" -> {
             printHelp();
@@ -674,7 +785,7 @@ public final class IpaPointCollector {
       if (rating < 1 || rating > 5) {
         throw new IllegalArgumentException("--rating must be 1..5");
       }
-      return new Args(user, pass, dry, rating);
+      return new Args(user, pass, dry, dump, rating);
     }
 
     private static String requireValue(String[] args, int idx, String flag) {
@@ -694,6 +805,7 @@ public final class IpaPointCollector {
             -p, --password   Site password (or EK_PASSWORD / IPA_PASSWORD)
             --rating N       Star rating for every food (default: 3)
             --dry-run        Discover forms and build payload, do not POST
+            --dump-fields    Print parsed fields + POST body
             -h, --help       Show this help
           """);
     }
